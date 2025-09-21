@@ -35,7 +35,6 @@ def main():
     add_custom_css()
     display_header()
     
-    # Add some instructions
     # st.write("Enter MD text in the text area below. The app will render it as Markdown in real-time.")
     
     with st.expander("Markdown Tips", expanded=False):
