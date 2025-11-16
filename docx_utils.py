@@ -4,11 +4,22 @@ from docx.shared import Inches, Pt
 from docx.enum.table import WD_TABLE_ALIGNMENT
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml.shared import OxmlElement, qn
+from docx.opc.constants import RELATIONSHIP_TYPE
 from io import BytesIO
 import markdown
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, NavigableString
+
+# Check if running in Streamlit context
+def _is_streamlit_context():
+    """Check if we're running in a Streamlit app context."""
+    try:
+        from streamlit.runtime.scriptrunner import get_script_run_ctx
+        return get_script_run_ctx() is not None
+    except:
+        return False
 import re
 
+URL_PATTERN = re.compile(r"(https?://[^\s<>()]+)")
 
 def sanitize_content_for_word(content):
     """Sanitize markdown content for Word export by removing/replacing problematic characters."""
@@ -86,6 +97,44 @@ def _set_table_borders(table):
     except Exception as e:
         # If border setting fails, continue without borders
         pass
+
+
+def _linkify_plain_urls(soup: BeautifulSoup) -> None:
+    """Wrap bare URLs in anchor tags so they become hyperlinks."""
+    for text_node in soup.find_all(string=URL_PATTERN):
+        if not isinstance(text_node, NavigableString):
+            continue
+        parent = text_node.parent
+        if parent and parent.name in {'a', 'code', 'pre'}:
+            continue
+        text_value = str(text_node)
+        parts = URL_PATTERN.split(text_value)
+        if len(parts) <= 1:
+            continue
+        new_nodes = []
+        for index, part in enumerate(parts):
+            if index % 2 == 0:
+                if part:
+                    new_nodes.append(NavigableString(part))
+            else:
+                link_text = part
+                trailing = ''
+                while link_text and link_text[-1] in '.,);':
+                    trailing = link_text[-1] + trailing
+                    link_text = link_text[:-1]
+                if not link_text:
+                    new_nodes.append(NavigableString(part))
+                    continue
+                link = soup.new_tag('a', href=link_text)
+                link.string = link_text
+                new_nodes.append(link)
+                if trailing:
+                    new_nodes.append(NavigableString(trailing))
+        for node in reversed(new_nodes):
+            text_node.insert_after(node)
+        text_node.extract()
+
+
 
 
 def _add_table_to_doc(doc, table_element):
@@ -195,10 +244,10 @@ def _add_table_to_doc(doc, table_element):
 
     except Exception as e:
         try:
-            st.error(f"Error adding table to document: {str(e)}")
+            if _is_streamlit_context():
+                st.error(f"Error adding table to document: {str(e)}")
         except:
-            print(f"Error adding table to document: {str(e)}")
-
+            pass
 
 def _is_nested_element(element, processed_elements):
     """Check if an element is nested inside another element we're already processing."""
@@ -227,6 +276,7 @@ def convert_md_to_docx(md_content):
 
         # Parse HTML content
         soup = BeautifulSoup(html_content, 'html.parser')
+        _linkify_plain_urls(soup)
 
         # Process only top-level elements to avoid duplicates
         processed_elements = set()
@@ -257,15 +307,13 @@ def convert_md_to_docx(md_content):
             elif element.name == 'ul':
                 # Add unordered list
                 for li in element.find_all('li', recursive=False):
-                    list_text = li.get_text().strip()
-                    if list_text:
-                        doc.add_paragraph(list_text, style='List Bullet')
+                    paragraph = doc.add_paragraph(style='List Bullet')
+                    _add_formatted_text(paragraph, li)
             elif element.name == 'ol':
                 # Add ordered list
                 for li in element.find_all('li', recursive=False):
-                    list_text = li.get_text().strip()
-                    if list_text:
-                        doc.add_paragraph(list_text, style='List Number')
+                    paragraph = doc.add_paragraph(style='List Number')
+                    _add_formatted_text(paragraph, li)
             elif element.name == 'table':
                 # Add table with proper formatting
                 _add_table_to_doc(doc, element)
@@ -293,41 +341,142 @@ def convert_md_to_docx(md_content):
         return doc
     except Exception as e:
         try:
-            st.error(f"Error converting to Word document: {str(e)}")
+            if _is_streamlit_context():
+                st.error(f"Error converting to Word document: {str(e)}")
         except:
-            print(f"Error converting to Word document: {str(e)}")
+            pass
         return None
 
 
-def _add_formatted_text(paragraph, element):
-    """Add formatted text (bold, italic) to a paragraph."""
+def _add_hyperlink(paragraph, text: str, url: str) -> None:
+    """Add a clickable hyperlink run to a paragraph."""
+    if not url:
+        paragraph.add_run(text)
+        return
     try:
-        # Handle simple text
-        if element.string:
-            paragraph.add_run(element.string)
-            return
+        part = paragraph.part
+        r_id = part.relate_to(url, RELATIONSHIP_TYPE.HYPERLINK, is_external=True)
+        hyperlink = OxmlElement('w:hyperlink')
+        hyperlink.set(qn('r:id'), r_id)
+
+        new_run = OxmlElement('w:r')
+        r_pr = OxmlElement('w:rPr')
         
-        # Handle formatted text
-        for content in element.contents:
-            if hasattr(content, 'name'):
-                if content.name == 'strong' or content.name == 'b':
-                    run = paragraph.add_run(content.get_text())
-                    run.bold = True
-                elif content.name == 'em' or content.name == 'i':
+        # Add hyperlink style
+        r_style = OxmlElement('w:rStyle')
+        r_style.set(qn('w:val'), 'Hyperlink')
+        r_pr.append(r_style)
+        
+        # Add explicit blue color for hyperlinks
+        color = OxmlElement('w:color')
+        color.set(qn('w:val'), '0563C1')  # Word's default hyperlink blue
+        r_pr.append(color)
+        
+        # Add underline
+        underline = OxmlElement('w:u')
+        underline.set(qn('w:val'), 'single')
+        r_pr.append(underline)
+        
+        new_run.append(r_pr)
+
+        text_elem = OxmlElement('w:t')
+        text_elem.text = text
+        new_run.append(text_elem)
+
+        hyperlink.append(new_run)
+        paragraph._p.append(hyperlink)
+    except Exception:
+        paragraph.add_run(text)
+
+
+def _add_formatted_text(paragraph, element):
+    """Add formatted text (bold, italic, hyperlinks) to a paragraph."""
+    try:
+        # Directly handle plain text nodes
+        if isinstance(element, NavigableString):
+            text = str(element)
+            if not text:
+                return
+            parts = URL_PATTERN.split(text)
+            if len(parts) <= 1:
+                paragraph.add_run(text)
+                return
+            for index, part in enumerate(parts):
+                if index % 2 == 0:
+                    if part:
+                        paragraph.add_run(part)
+                else:
+                    link_text = part
+                    trailing = ''
+                    while link_text and link_text[-1] in '.,);':
+                        trailing = link_text[-1] + trailing
+                        link_text = link_text[:-1]
+                    if not link_text:
+                        paragraph.add_run(part)
+                        continue
+                    _add_hyperlink(paragraph, link_text, link_text)
+                    if trailing:
+                        paragraph.add_run(trailing)
+            return
+
+        if not hasattr(element, 'name'):
+            paragraph.add_run(str(element))
+            return
+
+        if element.name == 'a' and element.get('href'):
+            link_text = element.get_text().strip() or element.get('href')
+            _add_hyperlink(paragraph, link_text, element.get('href'))
+            return
+
+        for content in element.contents if hasattr(element, 'contents') else []:
+            if isinstance(content, NavigableString):
+                # Process text nodes for inline URLs
+                text = str(content)
+                if text:
+                    parts = URL_PATTERN.split(text)
+                    if len(parts) > 1:
+                        for index, part in enumerate(parts):
+                            if index % 2 == 0:
+                                if part:
+                                    paragraph.add_run(part)
+                            else:
+                                link_text = part
+                                trailing = ''
+                                while link_text and link_text[-1] in '.,);':
+                                    trailing = link_text[-1] + trailing
+                                    link_text = link_text[:-1]
+                                if not link_text:
+                                    paragraph.add_run(part)
+                                    continue
+                                _add_hyperlink(paragraph, link_text, link_text)
+                                if trailing:
+                                    paragraph.add_run(trailing)
+                    else:
+                        paragraph.add_run(text)
+            elif hasattr(content, 'name'):
+                if content.name in {'strong', 'b'}:
+                    # Check if bold element contains links
+                    if content.find('a'):
+                        _add_formatted_text(paragraph, content)
+                    else:
+                        run = paragraph.add_run(content.get_text())
+                        run.bold = True
+                elif content.name in {'em', 'i'}:
                     run = paragraph.add_run(content.get_text())
                     run.italic = True
                 elif content.name == 'code':
                     run = paragraph.add_run(content.get_text())
                     run.font.name = 'Consolas'
                     run.font.size = Pt(10)
+                elif content.name == 'a' and content.get('href'):
+                    link_text = content.get_text().strip() or content.get('href')
+                    _add_hyperlink(paragraph, link_text, content.get('href'))
                 else:
-                    paragraph.add_run(content.get_text())
-            else:
-                # Plain text
-                paragraph.add_run(str(content))
+                    _add_formatted_text(paragraph, content)
     except Exception:
-        # Fallback to plain text if formatting fails
-        paragraph.add_run(element.get_text())
+        paragraph.add_run(element.get_text() if hasattr(element, 'get_text') else str(element))
+
+
 
 
 def get_docx_bytes(doc):
@@ -339,7 +488,8 @@ def get_docx_bytes(doc):
         return docx_bytes.getvalue()
     except Exception as e:
         try:
-            st.error(f"Error generating Word document bytes: {str(e)}")
+            if _is_streamlit_context():
+                st.error(f"Error generating Word document bytes: {str(e)}")
         except:
-            print(f"Error generating Word document bytes: {str(e)}")
+            pass
         return None

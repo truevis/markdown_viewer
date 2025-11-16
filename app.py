@@ -50,8 +50,18 @@ def main():
         - Multiple spaces will be preserved in the output
         """)
     
+    # Read initial content from sample.md if available
+    initial_content = ""
+    try:
+        with open("sample.md", "r", encoding="utf-8") as f:
+            initial_content = f.read()
+    except FileNotFoundError:
+        initial_content = "# Welcome to Markdown Viewer\n\nEnter your markdown content here..."
+    except Exception as e:
+        initial_content = f"# Error reading sample.md: {str(e)}\n\nEnter your markdown content here..."
+
     # Create a text area for user input
-    user_text = st.text_area("Enter MD text here:", height=200)
+    user_text = st.text_area("Enter MD text here:", value=initial_content, height=200)
     
     # Display the rendered markdown and add download button
     if user_text:
