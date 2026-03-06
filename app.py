@@ -2,6 +2,11 @@ import streamlit as st
 
 from docx_utils import convert_md_to_docx, get_docx_bytes
 
+def replace_dollar_with_fullwidth(text):
+    if not isinstance(text, str):
+        return text
+    return text.replace("$", "＄")
+
 def set_page_config():
     st.set_page_config(
         page_title="Markdown Viewer",
@@ -67,7 +72,7 @@ def main():
     if user_text:
         with st.container(border=True):
             st.subheader("Markdown Output:")
-            st.markdown(user_text)
+            st.markdown(replace_dollar_with_fullwidth(user_text))
         
         # Add download buttons directly
         # Convert to Word and offer download
