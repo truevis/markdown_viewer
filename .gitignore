@@ -23,7 +23,9 @@ env/
 .DS_Store
 Thumbs.db
 
-# Logs
 *.log
 todo.md
 .cursorrules
+.agent/
+.cursor/
+.gitignore

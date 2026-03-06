@@ -1,4 +1,9 @@
+import importlib
 import streamlit as st
+
+import docx_utils
+
+importlib.reload(docx_utils)
 
 from docx_utils import convert_md_to_docx, get_docx_bytes
 
